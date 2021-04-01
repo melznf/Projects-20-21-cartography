@@ -1,0 +1,533 @@
+---
+title: "Cartographie des entreprises de l'agglomération Tourangelle"
+author: "Yasemin Akdag & Mélissa Zennaf"
+date: "Mars 2021"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    toc_depth: 2
+    fig_width: 6
+    fig_heigth: 8
+    highlight: tango
+    theme: flatly
+    css: untitled.css
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, warning=FALSE, message=FALSE)
+```
+
+```{css, echo=FALSE}
+.watch-out {
+  background-color: white;
+  border: 1px solid #74C476;
+  font-weight: bold;
+}
+```
+
+```{r}
+library(ggmap) 
+library(ggplot2)
+theme_set(
+  theme_minimal() +
+    theme(legend.position = "right")
+  )
+library(dplyr)
+library(forcats)
+library(tidyr)
+library(kableExtra)
+library(stringr)
+library(gridExtra)
+library(kableExtra)
+library(ggrepel)
+```
+
+# Introduction 
+
+> Que faire des données spatiales ? C'est à cette question que nous tenterons de répondre dans cette étude. En effet, les données spatiales ou géographiques gagnent à être représentées sur une carte pour permettre de mieux en saisir le sens. 
+
+Les données travaillées dans cette études sont issues du site [data.tours-metropole](https://data.tours-metropole.fr/pages/home/). Elles sont contenues dans la base de données Sirene où sont recensées les informations sur des millions d'entreprises et établissements actifs ou non, de tous les secteurs et dans toute la France. Dans cette étude, on se restreindra aux informations sur les entreprises et établissements de l'agglomération de Tours.
+
+Nous consacrerons ce notebook à la représentation spatiale à l'aide des packages *ggmap* et *leaflet* à partir des données géographiques contenues dans cette table de données. En particulier, nous essayerons de représenter la densité d'entreprise par zone géographique. Que pourra-t-on conclure de ces représentations cartographiques ? Où les établissements et entreprises sont-ils le plus nombreux ? Existe-t-il des disparités en termes de dynamisme économique au sein de l'agglomération tourangelle ?
+
+# Importation et preprocessing de la base de données 
+
+```{r}
+data<-read.csv("base-sirene-v3.csv", header=TRUE, sep=';')
+```
+
+La table de données contient `r nrow(data)` entrées et `r ncol(data)` variables. Nous avons donc beaucoup de variables et accessoirement beaucoup de données manquantes. La plupart de nos variables sont qualitatives. On va donc commencer par sélectionner les variables sur lesquelles on va travailler et préparer notre base de données pour la suite de l'étude.
+
+Après étude approfondie des variables disponibles, on va sélectionner 18 variables parmis les 108 disponibles. 
+
+```{r}
+data=select(data, siret, Date.de.création.de.l.établissement, Tranche.de.l.effectif.de.l.établissement,  Code.postal.de.l.établissement, Commune.de.l.établissement, Etat.administratif.de.l.établissement, Caractère.employeur.de.l.établissement, Altitude.moyenne.de.la.commune.de.l.établissement, Superficie.de.la.commune.de.l.établissement, Population.de.la.commune.de.l.établissement, Tranche.de.l.effectif.de.l.unité.légale, Catégorie.juridique.de.l.unité.légale, Caractère.employeur.de.l.unité.légale, Section.de.l.unité.légale, Sous.section.de.l.unité.légale, Nature.juridique.de.l.unité.légale, Géolocalisation.de.l.établissement, Enseigne.de.l.établissement.1)
+```
+
+Nous les recodons pour plus de maniabilité.
+
+```{r}
+names(data) <- c(
+  "SIRET", "DATE_CREATION_ETAB", "EFFECTIF_ETAB", "CP_ETAB", "VILLE_ETAB", "ETAT_ADMIN_ETAB", "EMPLOYEUR_ETAB","ALTITUDE", "SUPERFICIE", "POP", "EFFECTIF_UL", "CAT_JUR_UL", "EMPLOYEUR_UL", "SECTION_UL", "SSECTION_UL", "NAT_JUR_UL", "GEOLOCALISATION_ETAB", "ENSEIGNE_ETAB"
+)
+```
+
+Les variables conservées sont les suivantes :
+
+* `SIRET` : Le numéro Siret afin de pouvoir se débarasser des doublons
+* `DATE_CREATION_ETAB` : La date de création de l'établissement
+* `EFFECTIF_ETAB` : La tranche d'effectif de l'établissement
+* `CP_ETAB` : Le code postal de l'adresse de l'établissement
+* `VILLE_ETAB` : La ville où est localisé l'établissement
+* `ETAT_ADMIN_ETAB` : L'état administratif de l'établissement (actif ou cessé)
+* `EMPLOYEUR_ETAB` : Le caractère employeur ou non de l'établissement
+* `ALTITUDE` : L'altitude moyenne de la ville de l'établissement
+* `SUPERFICIE` : La superficie de la ville de l'établissement
+* `POP` : La population de la ville de l'établissement
+* `EFFECTIF_UL` : L'effectif de l'unité légale
+* `CAT_JUR_UL` : La catégorie juridique de l'unité légale
+* `EMPLOYEUR_UL` : Le caractère employeur de l'unité légale
+* `SECTION_UL` : La section de l'activité de l'unité légale
+* `SSECTION_UL` : La sous-section de l'activité de l'unité légale
+* `NAT_JUR_UL` : La nature juridique de l'unité légale
+* `GEOLOCALISATION_ETAB` : Les coordonnées GPS de l'établissement
+* `ENSEIGNE_ETAB` : L'enseigne de l'établissement
+
+On change le type de certaines variables qui ne sont pas au bon format et on observe la structure de nos données. 
+
+```{r}
+data$CP_ETAB<-as.factor(data$CP_ETAB)
+data$SECTION_UL<-as.factor(data$SECTION_UL)
+data$VILLE <-as.factor(data$VILLE)
+```
+
+Pour terminer, nous allons recoder la variable `VILLE_ETAB` car nous avons des tirets dans certains cas pour le nom des villes. Nous allons donc remplacer tous les tirets par des espaces dans les modalités de cette variable.
+
+```{r, echo=TRUE, class.source="watch-out"}
+list<-str_replace_all(data$VILLE_ETAB, "-", " ")
+data$VILLE_ETAB<-c(list)
+```
+
+Notre table de données est maintenant prête à être exploitée. 
+
+# Découverte de la table de données
+
+## Pour l'établissement 
+
+L'établissement désigne l'entreprise ou l'organisme considéré. Nous avons `r nrow(data[data$EMPLOYEUR_ETAB=="Oui",])` établissements employant des salariés et `r nrow(data[data$EMPLOYEUR_ETAB=="Non",])` n'en employant pas. Parmis les établissements, on peut observer les effectifs de salariés dans le graphique suivant.
+
+```{r, fig.width=7}
+t0<-table(data$EFFECTIF_ETAB)
+df0<-data.frame(t0)
+df0 <- df0[order(df0$Freq),]
+
+ggplot(data=df0, aes(y = Freq, x=reorder(Var1, Freq), label=Freq)) +
+  geom_col(fill = "#74C476") +coord_flip()+geom_text(hjust=-0.1, size=2)+ 
+  labs(axis.title.x = element_blank(), 
+       axis.title.y = element_blank(),
+       title = "Effectif des établissements")+
+  theme(legend.position="right", axis.line = element_blank(), axis.text.x=element_text(size=5), axis.text.y=element_text(size=5),
+        plot.margin = unit(c(0, 0, -1, -1), 'lines'),
+plot.title = element_text(color="#74C476", size=8))
+```
+
+Pour une grande partie des établissements, l'effectif n'est pas renseigné dans la table de données. Globalement, il y a de très peu d'établissements qui emploient beaucoup de salariés. 
+
+Il y a `r nrow(data[data$ETAT_ADMIN_ETAB=="Actif",])` établissements encore actifs et `r nrow(data[data$ETAT_ADMIN_ETAB=="Fermé",])` établissements dont l'activité a pris fin. 
+
+## Pour l'unité légale
+
+Les informations sur l'unité légale nous permettent de connaître le champ d'activité des établissements. 
+
+```{r}
+t1<-table(data$SECTION_UL)
+df1<-data.frame(t1)
+df1 <- df1[order(df1$Freq),]
+
+ggplot(data=df1, aes(y = Freq, x=reorder(Var1, Freq), label=Freq)) +
+  geom_col(fill = "#74C476") +coord_flip()+geom_text(hjust=0, size=2)+ 
+  labs(axis.title.x = element_blank(), 
+       axis.title.y = element_blank(),
+       title = "Champ d'activité")+
+  theme(legend.position="right", axis.line = element_blank(), axis.text.x=element_text(size=5), axis.text.y=element_text(size=5),
+        plot.margin = unit(c(0, 0, -1, -1), 'lines'),
+plot.title = element_text(color="#74C476", size=8))
+```
+
+Dans chaque section, il existe des sous-sections. Par exemple, pour la section "Commerce", nous avons quatre sous-sections. 
+
+```{r}
+
+data_commerce <- data %>% 
+  filter(SECTION_UL == "Commerce")
+
+t51<-table(data_commerce$SSECTION_UL)
+df51<-data.frame(t51)
+df51<-df51[df51$Freq>0,]
+
+
+
+ggplot(data=df51, aes(y = Freq, x=reorder(Var1, Freq), label=Freq)) +
+  geom_col(fill = "#74C476") +coord_flip()+geom_text(hjust=-0.1, size=2)+ 
+  labs(axis.title.x = element_blank(), 
+       axis.title.y = element_blank(),
+       title = "Sous-section de l'activité")+
+  theme(legend.position="right", axis.line = element_blank(), axis.text.x=element_text(size=5), axis.text.y=element_text(size=5),
+        plot.margin = unit(c(0, 0, -1, -1), 'lines'),
+plot.title = element_text(color="#74C476", size=8))
+```
+
+Nous possédons également des informations sur la nature juridique des unités légales.
+
+## Pour la ville 
+
+```{r}
+t3<-table(data$VILLE_ETAB)
+df3<-data.frame(t3)
+df3<-df3[df3$Freq>0,]
+
+ggplot(data=df3,aes(y = Freq, x=reorder(Var1, Freq), label=Freq)) +
+  geom_col(fill = "#74C476") +coord_flip()+ 
+  geom_text(hjust=0, size=2)+
+  labs(axis.title.x = element_blank(), 
+       axis.title.y = element_blank(),
+       title = "Nombre d'établissement par ville")+
+  theme(legend.position="right", axis.line = element_blank(), axis.text.x=element_text(size=5), axis.text.y=element_text(size=5),
+        plot.margin = unit(c(0, 0, -1, -1), 'lines'),
+plot.title = element_text(color="#74C476", size=8))
+#data$Population.de.la.commune.de.l.établissement
+```
+
+La table de données contient également la population, la superficie et l'altitude de la ville où est situé l'établissement. 
+
+Notre analyse descriptive des données étant réalisée, nous allons à présent nous concentrer sur les données géographiques contenues dans notre table de données. 
+
+# Analyse des données géographiques 
+
+Notre base de données contient des informations géographiques sur l'emplacement des établissements. Grâce à ces informations, nous allons pouvoir placer les entreprises sur une carte. 
+
+Pour plus de commodité, on commence par séparer la colonne `GEOLOCALISATION_ETAB` en deux variables : 
+
+- `gps1` : la latitude
+- `gps2` : la longitude
+
+```{r, echo=TRUE, class.source="watch-out"}
+data<-data %>%
+  separate(col = "GEOLOCALISATION_ETAB",
+           into = paste0("gps", 1:2), sep = ",",
+           extra = "merge")
+```
+
+```{r}
+data$gps1<-as.numeric(data$gps1)
+data$gps2<-as.numeric(data$gps2)
+data<-data %>% drop_na(gps1)
+data<-data %>% drop_na(gps2)
+
+```
+
+La ville de Tours est caractérisée par les coordonnées GPS suivantes : 
+
+- latitude : 47.394144
+- longitude : 0.68484
+
+On s'attend donc à trouver des coordonnées de cet ordre là dans nos données. 
+
+```{r}
+la<-ggplot(data, aes(y=gps1)) +
+  geom_boxplot(color="#74C476")+
+  labs(y = "latitude",
+       x = "",  
+       title = "Distribution des latitudes")+
+  theme(legend.position="right", axis.line = element_blank(), axis.text.x=element_text(size=5), axis.text.y=element_text(size=5),
+        plot.margin = unit(c(0, 0, 0, 0), 'lines'),
+plot.title = element_text(color="#74C476", size=8))
+
+lo<-ggplot(data, aes(y=gps2)) +
+  geom_boxplot(color="#74C476")+
+  labs(y = "longitude",
+       x = "", 
+       title = "Distribution des longitudes")+
+  theme(legend.position="right", axis.line = element_blank(), axis.text.y=element_blank(), axis.text.x=element_text(size=5),
+        plot.margin = unit(c(0, 0, 0, 0), 'lines'),
+plot.title = element_text(color="#74C476", size=8))
+grid.arrange(la, lo, nrow=1)
+```
+
+Le graphique précédent nous confirme que les données géographiques dont nous disposons sont correctes. 
+
+```{r}
+lat<-ggplot(data, aes(x=VILLE_ETAB, y=gps1)) +
+  geom_boxplot(color="#74C476")+coord_flip()+
+  labs(y = "latitude",
+       x = "", 
+       title = "Distribution des latitudes par ville")+
+  theme(legend.position="right", axis.line = element_blank(), axis.text.x=element_text(size=5), axis.text.y=element_text(size=5),
+        plot.margin = unit(c(0, 0, 0, 0), 'lines'),
+plot.title = element_text(color="#74C476", size=8))
+
+long<-ggplot(data, aes(x=VILLE_ETAB, y=gps2)) +
+  geom_boxplot(color="#74C476")+coord_flip()+
+  labs(y = "longitude",
+       x = "", 
+       title = "Distribution des longitudes par ville")+
+  theme(legend.position="right", axis.line = element_blank(), axis.text.y=element_blank(), axis.text.x=element_text(size=5),
+        plot.margin = unit(c(0, 0, 0, 0), 'lines'),
+plot.title = element_text(color="#74C476", size=8))
+
+grid.arrange(lat, long, nrow=1)
+```
+
+Les observations des coordonnées GPS des différentes communes de l'aglomération Tourangelle sont cohérentes. 
+
+# Cartographie avec ggmap 
+
+Avant toute autre chose, il faut une clé API Google pour récupérer les cartes depuis Google Maps. Pour cela, il faut visiter le site suivant : [Obtenir une clé API Google](https://cloud.google.com/maps-platform/). On s'enregistre sur le site et on obtient donc une chaîne de caractères qui constitue notre clé API. Il en faut une par ordinateur. 
+
+Pour plus d'informations, on peut consulter l'aide dans l'onglet "help" de RStudio avec les mots clé suivants : "register_google". On utilise ensuite la commande suivante pour s'enregistrer (notons que la spécification **write=TRUE** permet de rester enregistré).
+
+```{r, echo=TRUE, class.source="watch-out"}
+register_google(key = "[AIzaSyA_eahl2GIOYwOCi9t5i-q9dB6IUEri5Us]", write = TRUE)
+```
+
+> Nous avons donc des données géographiques exploitables. On va les représenter sur une carte de l'agglomération de Tours. Nous allons dans cette partie utiliser le package *ggmap*. Le principe est de récupérer une carte à partir de coordonnées que l'on fait passer dans la fonction **get_map** et en l'occurrence **get_stamenmap** pour récupérer des cartes de la source "stamen".
+
+Nous cherchons à afficher une carte. On va l'importer depuis google grâce à la commande suivante. On va spécifier les limites de notre carte grâce aux arguments **left, right**,... et à l'aide des graphiques précédents. On doit aussi spécifier le zoom (10 pour l'échelle ville) et le type de carte. 
+
+La commande **ggmap** permet d'afficher la carte que l'on vient d'importer. 
+
+```{r, echo=TRUE, class.source="watch-out"} 
+map<-get_stamenmap(c(left = 0.45, bottom = 47.25, right = 0.9, top = 47.5), zoom=10, source = "stamen", maptype ="terrain")
+ggmap(map)
+```
+
+```{r, echo=FALSE}
+map1 <- get_stamenmap(c(left = 0.45, bottom = 47.25, right = 0.9, top = 47.5), zoom=10, source = "stamen", maptype ="terrain")
+
+map2 <- get_stamenmap(c(left = 0.45, bottom = 47.25, right = 0.9, top = 47.5), zoom=10, source = "stamen", maptype ="terrain-background")
+
+map3 <- get_stamenmap(c(left = 0.45, bottom = 47.25, right = 0.9, top = 47.5), zoom=10, source = "stamen", maptype = "terrain-labels")
+
+map4 <- get_stamenmap(c(left = 0.45, bottom = 47.25, right = 0.9, top = 47.5), zoom=10, source = "stamen", maptype = "terrain-lines")
+
+map5 <- get_stamenmap(c(left = 0.45, bottom = 47.25, right = 0.9, top = 47.5), zoom=10, source = "stamen", maptype = "toner")
+
+map6<- get_stamenmap(c(left = 0.45, bottom = 47.25, right = 0.9, top = 47.5), zoom=10, source = "stamen", maptype = "toner-2010")
+
+map7<- get_stamenmap(c(left = 0.45, bottom = 47.25, right = 0.9, top = 47.5), zoom=10, source = "stamen", maptype = "toner-2011")
+
+map8<- get_stamenmap(c(left = 0.45, bottom = 47.25, right = 0.9, top = 47.5), zoom=10, source = "stamen", maptype = "toner-background")
+
+map10<- get_stamenmap(c(left = 0.45, bottom = 47.25, right = 0.9, top = 47.5), zoom=10, source = "stamen", maptype = "toner-hybrid")
+
+map11<- get_stamenmap(c(left = 0.45, bottom = 47.25, right = 0.9, top = 47.5), zoom=10, source = "stamen", maptype = "toner-labels")
+
+map12<- get_stamenmap(c(left = 0.45, bottom = 47.25, right = 0.9, top = 47.5), zoom=10, source = "stamen", maptype = "toner-lines")
+
+map13<- get_stamenmap(c(left = 0.45, bottom = 47.25, right = 0.9, top = 47.5), zoom=10, source = "stamen", maptype =  "toner-lite")
+
+map14 <- get_stamenmap(c(left = 0.45, bottom = 47.25, right = 0.9, top = 47.5), zoom=10, source = "stamen", maptype =  "watercolor")
+```
+
+Nous obtenons donc une carte donc nous avons pu fixer les limites. Comme *ggmap* fonctionne avec *ggplot2*, on va pouvoir utiliser ses commandes pour ajouter des objets sur nos fonds de carte. 
+
+> Les informations géographiques dont nous disposons nous permettent de placer des localisations précises sur une carte statique. Cependant, à la vue du nombre de données dont nous disposons (`r nrow(data)`), placer les entreprises sur une carte n'est pas la meilleure idée que nous puissions avoir. Pour mieux comprendre nos données, étudier la densité d'entreprises par secteur semble plus pertinent. 
+
+## Représentation des activités commerciales par sous-section 
+
+Dans ce graphique, nous allons observer l'intensité des activités commerciales. On divise cette section en 4 sous-sections avec l'option **facet_wrap**. La transparence du nuage de points facilite la lisibilité. On utilise finalement **geom_density_2d** pour mieux se rendre compte de la concentration des entreprises.
+
+```{r, echo=TRUE, class.source="watch-out"}
+data_commerce <- data %>% 
+  filter(SECTION_UL == "Commerce")
+
+ggmap(map3)+ geom_point(data=data_commerce, aes(x=gps2, y=gps1), alpha=0.3, colour="#74C476")+
+  #stat_density2d(aes(x = gps2, y = gps1, fill = ..level.., alpha =..level..), size = 0.2, bins = 50, data = data_commerce, geom = "polygon", color="#51574a")+
+  geom_density2d(data = data_commerce, aes(x = gps2, y = gps1), size = 0.4, colour="#006D2C")+
+  facet_wrap(~SSECTION_UL)+
+  theme(legend.position="right", axis.line = element_blank(),
+        axis.text = element_blank(),
+        axis.ticks = element_blank(),
+        plot.margin = unit(c(0, 0, -1, -1), 'lines'),
+plot.title = element_text(color="#74C476", size=8))+ 
+  labs(y = "",
+       x = "",
+       title = "Intensité des activités commerciales")+ scale_fill_gradient()+ stat_ellipse(data=data_commerce, aes(x=gps2, y=gps1), colour="#006D2C")
+
+```
+
+L'ajout d'une représentation de la dispersion ainsi que l'utilisation de **facet_wrap** nous permet donc d'y voir plus clair qu'avec un simple nuage de points.
+
+### Représentation du nombre d'industries manufacturières
+
+Dans cette carte, nous allons montrer l'intensité du nombre d'industries manufacturières au sein de l'agglomération Tourangelle par petite zone géographique. On utilise cette fois **qmplot** pour gérer le zoom.  
+
+On utilisera **geom_bin2d** pour représenter le nombre d'industries par zone avec une coloration par densité.
+
+```{r, echo=TRUE, class.source="watch-out"}
+data_IM<-data %>% 
+  filter(
+    SECTION_UL %in% c("Industrie manufacturiere"))
+
+ggmap(map8)+
+  geom_bin2d(data=data_IM, aes(x=gps2, y=gps1), alpha=0.9) +
+  labs(y = "Latitude",
+       x = "Longitude", title="Industrie manufacturière")+
+  theme(legend.position="right", axis.line = element_blank(),
+        axis.text = element_blank(),
+        axis.ticks = element_blank(),
+        plot.margin = unit(c(0, 0, -1, -1),'lines'),
+plot.title = element_text(color="#74C476", size=8))+
+  scale_fill_gradient(low="#74C476", high="#006D2C")
+```
+
+## Densité des activités immobilières
+
+Pour cette carte, nous allons tenter de représenter graphiquement la concentration des activités immobilières. On utilise la commande **stat_density_2d** pour avoir une meilleure représentation. 
+
+```{r, echo=TRUE, class.source="watch-out"}
+data_AI<-data %>% 
+  filter(
+    SECTION_UL %in% c("Activites immobilieres"))
+
+ggmap(map12)+geom_point(data=data_AI, aes(x=gps2, y=gps1), colour="#74C476", alpha=0.1)+
+  labs(y = "Latitude",
+       x = "Longitude", title="Activités immobilières")+
+  stat_density_2d(data=data_AI, aes(fill = ..level.., x=gps2, y=gps1), geom = "polygon", alpha = .6, color = NA) +
+  scale_fill_gradient2("count", low ="#74C476", mid = "#006D2C", high = "black", midpoint = 600)+
+  theme(legend.position="right", axis.line = element_blank(),
+        axis.text = element_blank(),
+        axis.ticks = element_blank(),
+        plot.margin = unit(c(0, 0, -1, -1),'lines'),
+plot.title = element_text(color="#74C476", size=8))
+
+```
+
+## Etat administratif des administrations publiques
+
+Dans cet exemple, nous allons voir comment représenter la densité lorsque l'on a plusieurs catégories à représenter. On va créer un graphique de densité pour la latitude et un pour la longitude. On va les combiner avec un nuage de points sur une carte. 
+
+```{r, echo=TRUE, class.source="watch-out"}
+
+data_ED<-data %>% 
+    filter(
+    SECTION_UL %in% c("Administration publique"))
+
+
+a<-ggmap(map8)+geom_point(aes(x = gps2, y = gps1, colour = ETAT_ADMIN_ETAB), data = data_ED, size = 0.6) + stat_ellipse()+
+  theme(legend.position=c(0.25, 0.9), axis.line = element_blank(),
+        plot.margin = unit(c(0, 0, -1, -1), 'lines'),
+plot.title = element_text(color="#74C476", size=8), legend.background = element_rect(fill="white", size=0.1, linetype="solid", colour="#74c493"))+ 
+  labs(y = "latitude",
+       x = "longitude",
+       title = element_blank())+scale_colour_manual(values=c("#74C476","#006D2C"))
+
+xdensity <- ggplot(data_ED, aes(gps2, fill=ETAT_ADMIN_ETAB)) + 
+  geom_density(alpha=.5) + 
+  scale_fill_manual(values = c("#74C476","#006D2C")) + 
+  labs(y = "",
+       x = "longitude", title="Administrations publiques")+
+  theme(legend.position="none", axis.line = element_blank(), axis.text.x=element_text(size=5), axis.text.y=element_text(size=5),
+        plot.margin = unit(c(0, 0, 0, 0), 'lines'),
+plot.title = element_text(color="#74C476", size=8))
+
+ydensity <- ggplot(data_ED, aes(gps1, fill=ETAT_ADMIN_ETAB)) + 
+  geom_density(alpha=.5) + 
+  scale_fill_manual(values = c("#74C476","#006D2C")) + coord_flip()+
+  labs(y = "",
+       x = "latitude")+
+  theme(legend.position="none", axis.line = element_blank(), axis.text.x=element_text(size=5), axis.text.y=element_text(size=5),
+        plot.margin = unit(c(0, 0, 0, 0), 'lines'))
+
+blankPlot <- ggplot()+geom_blank(aes(1,1))+
+  theme(
+    plot.background = element_blank(), 
+   panel.grid.major = element_blank(),
+   panel.grid.minor = element_blank(), 
+   panel.border = element_blank(),
+   panel.background = element_blank(),
+   axis.title.x = element_blank(),
+   axis.title.y = element_blank(),
+   axis.text.x = element_blank(), 
+   axis.text.y = element_blank(),
+   axis.ticks = element_blank(),
+   axis.line = element_blank()
+     )
+
+grid.arrange(xdensity, blankPlot, a, ydensity, 
+        ncol=2, nrow=2, widths=c(4, 1.4), heights=c(1.4, 4))
+```
+
+Dans cet exemple, nous utilisons **geom_point** avec une coloration des données par état administratif. On ajoute également des représentations de la densité pour comprendre mieux où se situent les administrations publiques fermées.
+
+> Le package *ggmap* a des avantages et inconvénients. D'une part, comme il fonctionne avec *ggplot2*, on peut utiliser toutes les commandes de ce package pour customisez nos cartes. D'autre part, il n'est pas aisé de gérer le zoom et l'importation des fonds de cartes nécéssite une clé API. Seule la source "Stamen" fonctionne actuellement, ce qui restreint le nombre de fonds de carte disponibles. Nous verrons dans la suite une alternative à *ggmap*.
+
+# Cartographie avec leaflet
+
+Le package *leaflet* a l'avantage de ne pas souffrir des mêmes inconvénients que *ggmap*. Sa dimmension interactive permet de choisir le zoom à sa convenance. De fait, comme un zoom adapté est possible, on peut représenter des nuages de points assez denses sur une carte et permettre à l'utilisateur de la carte la meilleure lisibilité possible. 
+
+Le package *leaflet* fonctionne sur le même principe que *ggplot2* avec la superposition de diverses couches d'informations. Par contre, il a ses commandes propres. 
+
+* `addProviderTiles, addTiles` :	Choisir la couche de fond
+* `addMarkers, addAwesomeMarkers, addCircleMarkers` :	Ajouter des marqueurs personnalisés
+* `addPopups` :	Ajouter une bulle avec de l’information
+* `addPolygons, addCircles, addRectangles` :	Ajouter des surfaces en forme de polygones, de cercles ou rectangles
+* `addLegend` :	Ajouter une légende
+* `addMeasure` :	Ajouter un bouton qui permet de mesurer des distances et des surfaces
+* `addEasyButton` :	Ajouter un bouton avec un niveau de zoom prédéfini
+
+Les fonds de cartes disponibles sont très nombreux et consultables [ici](http://leaflet-extras.github.io/leaflet-providers/preview/index.html).
+
+## Les entreprises immobilières selon le statut administratif 
+
+Dans cette carte, on va représenter l'emplacement des établissements de l'immobilier avec une coloration selon l'état administratif. On choisit le fond de carte **Esri.WorldImagery**. 
+
+```{r, echo=TRUE, class.source="watch-out"}
+library(leaflet)
+cof <- colorFactor(palette = c("#74C476","#006D2C"), domain = NULL)
+
+leaflet(data_AI) %>%
+      addProviderTiles("Esri.NatGeoWorldMap") %>%
+      addCircleMarkers(~gps2, ~gps1,
+                       popup=data_AI$SECTION_UL,
+                       #label = ~htmlEscape(df_categ()$EFFECTIF_ETAB),
+                       weight = 4,radius = 5,
+                       color=~cof(data_AI$ETAT_ADMIN_ETAB),
+                       stroke = F, fillOpacity = 0.7) %>%
+      addLegend(position = "bottomright", values = ~ETAT_ADMIN_ETAB, pal = cof, title = "Etat")
+```
+
+
+
+## Effectif par ville
+
+Dans cette carte, on représente les effectifs d'entreprises et établissements par ville. Le rayon du cercle est calculé à partir de cet effectif. Plus précisément, le rayon du cercle est l'effectif divisé par 500 pour garder de la visibilité. On ajoute aussi un label avec le nom de la ville et le nombre d'établissements. 
+
+```{r, echo=TRUE, class.source="watch-out"}
+data_ville<-cbind(data[,c("VILLE_ETAB", "gps1", "gps2")])
+data_ville=data_ville %>% distinct(VILLE_ETAB, .keep_all = TRUE)
+df9<-data.frame(table(data$VILLE_ETAB))
+names(df9)<-c("VILLE_ETAB", "FREQ")
+dt<-inner_join(data_ville, df9, by=c("VILLE_ETAB"))
+```
+
+```{r, echo=TRUE, class.source="watch-out"}
+leaflet(dt) %>% addTiles() %>%  addProviderTiles("CartoDB.Voyager") %>%
+  addCircleMarkers(~gps2, ~gps1, label = ~ paste(VILLE_ETAB, "," , FREQ, " établissements"),
+    radius = ~FREQ/500,
+    color = "#74C476",
+    stroke = FALSE, fillOpacity = 0.5
+  )
+```
+
+# Conclusion
+
+* On est partis d'une table de données avec de très nombreuses variables et beaucoup de données. 
+* On a commencé par traiter nos données pour les rendre exploitables. 
+* On a testé deux packages pour réaliser nos cartes : *ggmap* et *leaflet*.
+* Chacun des packages a ses avantages et inconvénients. Globalement, *leaflet* est plus flexible mais il a sa syntaxe propre contrairement à *ggmap* qui fonctionne avec *ggplot2*. 
+* Les cartes *leaflet* sont plus adaptées à Shiny car elles ont une dimmension interactive. 
+* Pour faciliter la lisibilité, on a dû développer des techniques pour pouvoir représenter les très nombreuses données de notre table de données. 
+* Au niveau géographique, on a pu observer que l'essentiel des activités économiques se situe à Tours, plus précisément entre la Loire et le Cher. 
+* Il y a donc des disparités certaines entre les villes de l'agglomération Tourangelle.

@@ -1,0 +1,22 @@
+body {
+    color: grey;
+}
+
+h1 {
+    color: #74C476;
+}
+
+h2 {
+    color: #006D2C;
+}
+
+footer {
+    color: black; background: #74C476;
+    position: fixed; top: 90%;
+    text-align:center; width:100%;
+}
+
+slides>slide.title-slide {
+	background-color: grey;
+	background-size: 100% 100%;
+}
